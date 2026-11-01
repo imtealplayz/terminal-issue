@@ -448,6 +448,8 @@ function simulate(s,input){
         repo.branches.set(name,(repo.branches.get(repo.branch)||[]).slice());return {text:"Created branch "+name};
       }
       if(action==="checkout"||action==="switch"){
+        const dirty=gitStatus(s,root,repo,false);
+        if(dirty!=="On branch "+repo.branch+"\n\nnothing to commit, working tree clean")return {text:"error: local changes would be overwritten by checkout. Commit or restore them first."};
         const create=args[0]==="-b",name=args[create?1:0];if(!name)return {text:"Usage: git "+action+" [-b] <branch>"};
         if(create){if(repo.branches.has(name))return {text:"fatal: branch '"+name+"' already exists"};repo.branches.set(name,(repo.branches.get(repo.branch)||[]).slice());}
         else if(!repo.branches.has(name))return {text:"error: pathspec '"+name+"' did not match any branch"};
