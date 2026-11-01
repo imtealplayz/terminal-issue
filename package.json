@@ -1,0 +1,18 @@
+{
+  "name": "teal-terminal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A Discord bot that simulates an interactive terminal session.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "check": "node --check index.js"
+  },
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "dependencies": {
+    "discord.js": "^14.19.3",
+    "dotenv": "^16.4.7"
+  }
+}
