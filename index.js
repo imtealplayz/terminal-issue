@@ -117,21 +117,21 @@ function simulate(s,input){
     case "mkdir":{
       const recursive=args.includes("-p"),paths=args.filter(x=>x!=="-p");if(!paths.length)return {text:"Usage: mkdir [-p] <directory>"};const errors=[];
       for(const path of paths){const full=resolve(path,s.cwd);if(get(s,full)){if(!recursive)errors.push("mkdir: "+path+": File exists");continue;}
-        if(recursive){let cur=s.fs;for(const bit of full.split("/").filter(Boolean)){if(!cur.children.has(bit))cur.children.set(bit,makeDir());cur=cur.children.get(bit);if(cur.type!=="dir"){errors.push("mkdir: "+path+": Not a directory");break;}}}
+        if(recursive){let cur=s.fs;const bits=full.split("/").filter(Boolean);for(let i=0;i<bits.length;i++){if(!cur||cur.type!=="dir"){errors.push("mkdir: "+path+": Not a directory");break;}if(!cur.children.has(bits[i]))cur.children.set(bits[i],makeDir());cur=cur.children.get(bits[i]);if(cur.type!=="dir"&&i<bits.length-1){errors.push("mkdir: "+path+": Not a directory");break;}}}
         else{const p=parent(s,full);if(!p)errors.push("mkdir: "+path+": No parent directory");else p.dir.children.set(p.name,makeDir());}}
       return {text:errors.join("\n")};
     }
     case "rmdir":{
       if(!args[0])return {text:"Usage: rmdir <empty-directory>"};const p=parent(s,args[0]),node=get(s,args[0]);
       if(!p||!node)return {text:"rmdir: "+args[0]+": No such directory"};if(node.type!=="dir")return {text:"rmdir: Not a directory"};
-      if(node.children.size)return {text:"rmdir: Directory not empty"};p.dir.children.delete(p.name);return {text:""};
+      if(node.children.size)return {text:"rmdir: Directory not empty"};const full=resolve(args[0],s.cwd);if(s.cwd===full||s.cwd.startsWith(full+"/")||full==="/home/teal")return {text:"rmdir: refusing to remove the current or a protected directory"};p.dir.children.delete(p.name);return {text:""};
     }
     case "rm":{
       const recursive=args.some(x=>["-r","-rf","-fr"].includes(x)),force=args.some(x=>["-f","-rf","-fr"].includes(x)),paths=args.filter(x=>!x.startsWith("-"));
       if(!paths.length)return {text:"Usage: rm [-r] <path>"};const errors=[];
       for(const path of paths){const full=resolve(path,s.cwd),p=parent(s,full),node=get(s,full);
         if(!p||!node){if(!force)errors.push("rm: "+path+": No such file");continue;}
-        if(full==="/"||full==="/home/teal"){errors.push("rm: refusing to remove protected directory");continue;}
+        if(full==="/"||full==="/home/teal"||s.cwd===full||s.cwd.startsWith(full+"/")){errors.push("rm: refusing to remove the current or a protected directory");continue;}
         if(node.type==="dir"&&!recursive){errors.push("rm: "+path+": Is a directory (use -r)");continue;}p.dir.children.delete(p.name);}
       return {text:errors.join("\n")};
     }
@@ -142,6 +142,7 @@ function simulate(s,input){
       if(!node)return {text:cmd+": source not found"};if(node.type==="dir"&&!recursive)return {text:cmd+": use -r for directories"};
       if(src==="/"||src==="/home/teal")return {text:cmd+": protected directory"};
       const finalPath=target&&target.type==="dir"?dest+"/"+src.split("/").pop():dest,p=parent(s,finalPath);
+      if(finalPath===src)return {text:""};
       if(!p)return {text:cmd+": destination directory does not exist"};if(cmd==="mv"&&finalPath.startsWith(src+"/"))return {text:"mv: cannot move a directory into itself"};
       p.dir.children.set(p.name,clone(node));if(cmd==="mv"){const old=parent(s,src);if(old)old.dir.children.delete(old.name);}return {text:""};
     }
