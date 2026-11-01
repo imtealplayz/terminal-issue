@@ -35,7 +35,11 @@ const descriptions = {
   journalctl:"Read the simulated system journal.", dmesg:"Show simulated kernel messages.", mount:"List simulated mounted filesystems.", umount:"Show a simulated unmount result without changing the host.",
   crontab:"List the simulated user's scheduled jobs with -l.", alias:"List aliases or define one, for example alias ll='ls -la'.", unalias:"Remove one or more simulated shell aliases.",
   pushd:"Change directory and save the previous location on a directory stack.", popd:"Return to the most recently saved directory.", dirs:"Display the simulated directory stack.",
-  reset:"Reset the visible terminal display.", yes:"Repeat text a limited number of times for demonstration.", shuf:"Shuffle the lines in a virtual text file."
+  reset:"Reset the visible terminal display.", yes:"Repeat text a limited number of times for demonstration.", shuf:"Shuffle the lines in a virtual text file.",
+  git:"Use the simulated Git repository: init, status, add, commit, log, branch, checkout, diff, restore, rm, config, remote.",
+  apt:"Manage the simulated package catalogue: update, search, show, install, remove, list.", "apt-get":"Alias for the simulated apt package manager.",
+  dpkg:"List or inspect simulated installed packages.", sudo:"Run a supported simulated command with elevated virtual privileges.", su:"Show simulated user-switch information.",
+  expr:"Evaluate a basic arithmetic expression without executing code.", bc:"Calculate an arithmetic expression in the simulated calculator."
 };
 const groups = [
   ["Shell",["help","clear","exit","pwd","ls","cd","tree","history","which","type","man"]],
@@ -45,7 +49,9 @@ const groups = [
   ["Utilities",["systemctl","service","neofetch","fastfetch","banner","fortune","cowsay","sl","matrix","hack","seq","rev","factor"]],
   ["Text and checksums",["printf","nl","tac","fold","sed","tr","strings","diff","cmp","sha256sum","md5sum","base64","hexdump","od","shuf"]],
   ["Linux administration",["groups","who","w","lscpu","lsblk","lspci","lsusb","hostnamectl","timedatectl","vmstat","journalctl","dmesg","mount","umount","crontab"]],
-  ["Shell conveniences",["basename","dirname","realpath","alias","unalias","pushd","popd","dirs","reset","yes"]]
+  ["Shell conveniences",["basename","dirname","realpath","alias","unalias","pushd","popd","dirs","reset","yes"]],
+  ["Development and packages",["git","apt","apt-get","dpkg","sudo","su"]],
+  ["Calculations",["expr","bc"]]
 ];
 const client = new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMessages,GatewayIntentBits.DirectMessages,GatewayIntentBits.MessageContent],partials:[Partials.Channel]});
 const makeDir=()=>({type:"dir",children:new Map(),mode:"drwxr-xr-x",modified:Date.now()});
@@ -62,7 +68,7 @@ function newSession(){
   seed(fs,"/tmp",makeDir());seed(fs,"/usr",makeDir());seed(fs,"/usr/bin",makeDir());
   return {username:"teal",hostname:"teal-pc",cwd:"/home/teal",oldCwd:"/home/teal",fs,started:Date.now(),history:[],
     vars:{USER:"teal",HOME:"/home/teal",SHELL:"/bin/bash",PATH:"/usr/local/bin:/usr/bin:/bin",PWD:"/home/teal",HOSTNAME:"teal-pc",TERM:"xterm-256color"},
-    aliases:{},dirStack:[],
+    aliases:{},dirStack:[],packages:new Set(["bash","coreutils","findutils","grep","sed","tar","gzip","git","nano","curl","wget"]),packageListsUpdated:false,gitRepos:new Map(),gitConfig:{name:"Teal",email:"teal@localhost"},
     services:{"ssh.service":"active","networking.service":"active","cron.service":"active","nginx.service":"inactive"},
     processes:[{pid:1,user:"root",cmd:"/sbin/init"},{pid:214,user:"root",cmd:"network-manager"},{pid:389,user:"teal",cmd:"/bin/bash"},{pid:511,user:"teal",cmd:"terminal-session"}]};
 }
@@ -73,13 +79,83 @@ function parent(s,path){const p=resolve(path,s.cwd);if(p==="/")return null;const
 function size(n){if(!n)return 0;if(n.type==="file")return Buffer.byteLength(n.content,"utf8");let total=0;for(const c of n.children.values())total+=size(c);return total;}
 function human(n){return n<1024?n+" B":n<1048576?(n/1024).toFixed(1)+" KB":(n/1048576).toFixed(1)+" MB";}
 function clone(n){if(n.type==="file")return makeFile(n.content);const c=makeDir();for(const [k,v] of n.children)c.children.set(k,clone(v));return c;}
-function tokenize(input){const out=[];let word="",quote=null,escape=false,active=false;for(const c of input){if(escape){word+=c;escape=false;active=true;}else if(c==="\\"&&quote!=="'"){escape=true;active=true;}else if(quote){if(c===quote)quote=null;else word+=c;active=true;}else if(c==="\""||c==="'"){quote=c;active=true;}else if(/\s/.test(c)){if(active)out.push(word);word="";active=false;}else{word+=c;active=true;}}if(escape)word+="\\";if(quote)throw new Error("Unclosed quote. Close it and try again.");if(active)out.push(word);return out;}
+function tokenize(input){
+  const out=[];let word="",quote=null,escape=false,active=false;
+  for(let i=0;i<input.length;i++){
+    const c=input[i];
+    if(escape){word+=c;escape=false;active=true;}
+    else if(c==="\\"){
+      const next=input[i+1],shouldEscape=quote===null||(quote==='"'&&['"',"\\","$"].includes(next))||(quote==='"'&&next===String.fromCharCode(96));
+      if(shouldEscape){escape=true;active=true;}else{word+=c;active=true;}
+    }else if(quote){if(c===quote)quote=null;else word+=c;active=true;}
+    else if(c==='"'||c==="'"){quote=c;active=true;}
+    else if(/\s/.test(c)){if(active)out.push(word);word="";active=false;}
+    else{word+=c;active=true;}
+  }
+  if(escape)word+="\\";
+  if(quote)throw new Error("Unclosed quote. Close it and try again.");
+  if(active)out.push(word);return out;
+}
 function prompt(s){const p=s.cwd==="/home/teal"?"~":s.cwd.startsWith("/home/teal/")?"~"+s.cwd.slice(10):s.cwd;return s.username+"@"+s.hostname+":"+p+"$";}
 function write(s,path,text,append){const p=parent(s,path);if(!p)return "cannot write '"+path+"': parent directory does not exist";const old=p.dir.children.get(p.name);if(old&&old.type!=="file")return path+": Is a directory";if(old){old.content=append?old.content+text:text;old.modified=Date.now();}else p.dir.children.set(p.name,makeFile(text));return null;}
 function readLines(s,path){const n=get(s,path);if(!n)return {error:path+": No such file or directory"};if(n.type!=="file")return {error:path+": Is a directory"};return {lines:n.content.replace(/\n$/,"").split("\n")};}
 function walk(n,prefix,out,depth){if(depth>4||n.type!=="dir")return;const entries=Array.from(n.children.entries()).sort((a,b)=>a[0].localeCompare(b[0]));entries.forEach(([name,child],i)=>{const last=i===entries.length-1;out.push(prefix+(last?"└── ":"├── ")+name+(child.type==="dir"?"/":""));if(child.type==="dir")walk(child,prefix+(last?"    ":"│   "),out,depth+1);});}
 function calendar(month,year){const first=new Date(year,month-1,1),days=new Date(year,month,0).getDate();let out=first.toLocaleString("en-US",{month:"long"})+" "+year+"\nSu Mo Tu We Th Fr Sa\n"+"   ".repeat(first.getDay());for(let d=1;d<=days;d++){out+=String(d).padStart(2," ")+" ";if((first.getDay()+d)%7===0)out+="\n";}return out;}
 
+function snapshotFiles(node,prefix,out){
+  if(node.type==="file"){out[prefix]=node.content;return;}
+  for(const [name,child] of node.children){if(name===".git")continue;const path=prefix?prefix+"/"+name:name;snapshotFiles(child,path,out);}
+}
+function currentSnapshot(s,root){const node=get(s,root);const out={};if(node&&node.type==="dir")snapshotFiles(node,"",out);return out;}
+function repoFor(s,path){
+  let current=resolve(path||s.cwd,s.cwd);
+  while(true){if(s.gitRepos.has(current))return {root:current,repo:s.gitRepos.get(current)};if(current==="/")break;const bits=current.split("/").filter(Boolean);bits.pop();current="/"+bits.join("/");if(!current)current="/";}
+  return null;
+}
+function putVirtualFile(s,root,relative,value){
+  const parts=relative.split("/").filter(Boolean);let node=get(s,root);
+  for(let i=0;i<parts.length-1;i++){if(!node.children.has(parts[i]))node.children.set(parts[i],makeDir());node=node.children.get(parts[i]);if(node.type!=="dir")return false;}
+  if(value===null){node.children.delete(parts[parts.length-1]);return true;}
+  node.children.set(parts[parts.length-1],makeFile(value));return true;
+}
+function replaceVirtualTree(s,root,snapshot){
+  const node=get(s,root);if(!node||node.type!=="dir")return;
+  for(const name of Array.from(node.children.keys()))if(name!==".git")node.children.delete(name);
+  for(const [path,value] of Object.entries(snapshot))putVirtualFile(s,root,path,value);
+}
+function headSnapshot(repo){
+  const commits=repo.branches.get(repo.branch)||[];return commits.length?commits[commits.length-1].snapshot:{};
+}
+function gitStatus(s,root,repo,short){
+  const head=headSnapshot(repo),work=currentSnapshot(s,root),paths=new Set([...Object.keys(head),...Object.keys(work),...repo.staged.keys()]);
+  const staged=[],unstaged=[],untracked=[];
+  for(const path of Array.from(paths).sort()){
+    const hasHead=Object.prototype.hasOwnProperty.call(head,path),hasWork=Object.prototype.hasOwnProperty.call(work,path),isStaged=repo.staged.has(path),stageValue=repo.staged.get(path);
+    if(isStaged&&stageValue!==(hasHead?head[path]:null))staged.push([stageValue===null?"D":!hasHead?"A":"M",path]);
+    if(isStaged){if(stageValue===null?hasWork:!hasWork||work[path]!==stageValue)unstaged.push(["M",path]);continue;}
+    if(!hasHead&&hasWork)untracked.push(path);
+    else if(hasHead&&!hasWork)unstaged.push(["D",path]);
+    else if(hasHead&&hasWork&&head[path]!==work[path])unstaged.push(["M",path]);
+  }
+  if(short)return [...staged.map(([status,path])=>status+" "+path),...unstaged.map(([status,path])=>" "+status+" "+path),...untracked.map(path=>"?? "+path)].join("\n")||"Working tree clean.";
+  const out=["On branch "+repo.branch,""];
+  if(staged.length){out.push("Changes to be committed:");for(const [status,path] of staged)out.push("  "+({A:"new file:",D:"deleted:",M:"modified:"}[status])+"   "+path);out.push("");}
+  if(unstaged.length){out.push("Changes not staged for commit:");for(const [status,path] of unstaged)out.push("  "+({D:"deleted:",M:"modified:"}[status])+"   "+path);out.push("");}
+  if(untracked.length){out.push("Untracked files:");for(const path of untracked)out.push("  "+path);out.push("");}
+  if(!staged.length&&!unstaged.length&&!untracked.length)out.push("nothing to commit, working tree clean");
+  else out.push("Use git add <file> to stage changes, then git commit.");
+  return out.join("\n");
+}
+function calculate(expression){
+  const tokens=expression.match(/\d+(?:\.\d+)?|[()+\-*/%^]/g)||[];
+  if(tokens.join("")!==expression.replace(/\s+/g,""))throw new Error("invalid expression");
+  let index=0;
+  function primary(){const token=tokens[index++];if(token==="("){const value=add();if(tokens[index++]!==")")throw new Error("missing )");return value;}if(token==="-")return -primary();if(token==="+")return primary();if(token===undefined||!Number.isFinite(Number(token)))throw new Error("expected a number");return Number(token);}
+  function power(){let value=primary();if(tokens[index]==="^"){index++;value=Math.pow(value,power());}return value;}
+  function multiply(){let value=power();while(["*","/","%"].includes(tokens[index])){const op=tokens[index++],right=power();if((op==="/"||op==="%")&&right===0)throw new Error("division by zero");value=op==="*"?value*right:op==="/"?value/right:value%right;}return value;}
+  function add(){let value=multiply();while(tokens[index]==="+"||tokens[index]==="-"){const op=tokens[index++],right=multiply();value=op==="+"?value+right:value-right;}return value;}
+  const result=add();if(index!==tokens.length||!Number.isFinite(result))throw new Error("invalid expression");return result;
+}
 function simulate(s,input){
   let args;try{args=tokenize(input);}catch(e){return {text:"bash: "+e.message};}
   if(!args.length)return {text:""};
@@ -90,6 +166,11 @@ function simulate(s,input){
     cmd=expansion.shift().toLowerCase();
     args=expansion.concat(args);
   }
+  if(cmd==="sudo"){
+    if(!args.length)return {text:"Usage: sudo <simulated-command>"};
+    cmd=args.shift().toLowerCase();
+  }
+  if(cmd==="apt-get")cmd="apt";
   s.history.push(input);if(s.history.length>100)s.history.shift();
   switch(cmd){
     case "help":{
@@ -305,6 +386,158 @@ function simulate(s,input){
       if(!path||!Number.isInteger(field)||field<1)return {text:"Usage: cut -d delimiter -f field <file>"};
       const result=readLines(s,path);if(result.error)return {text:"cut: "+result.error};
       return {text:result.lines.map(line=>line.split(delimiter)[field-1]||"").join("\n")};
+    }
+    case "git":{
+      const action=(args.shift()||"").toLowerCase();
+      if(!action)return {text:"Usage: git <init|status|add|commit|log|branch|checkout|switch|diff|restore|rm|config|remote|show>"};
+      if(action==="init"){
+        const root=resolve(args[0]||".",s.cwd),node=get(s,root);if(!node||node.type!=="dir")return {text:"fatal: '"+root+"' is not a directory"};
+        if(s.gitRepos.has(root))return {text:"Reinitialized existing Git repository in "+root+"/.git/"};
+        node.children.set(".git",makeDir());
+        s.gitRepos.set(root,{branch:"main",branches:new Map([["main",[]]]),staged:new Map()});
+        return {text:"Initialized empty Git repository in "+root+"/.git/"};
+      }
+      const found=repoFor(s,s.cwd);if(!found)return {text:"fatal: not a git repository (or any parent directory): .git"};
+      const {root,repo}=found;
+      if(action==="status")return {text:gitStatus(s,root,repo,args.includes("--short")||args.includes("-s"))};
+      if(action==="add"){
+        if(!args.length)return {text:"Nothing specified, nothing added."};
+        const current=currentSnapshot(s,root),head=headSnapshot(repo),all=args.includes(".")||args.includes("-A")||args.includes("--all");
+        if(all){for(const path of new Set([...Object.keys(head),...Object.keys(current)]))if(head[path]!==current[path])repo.staged.set(path,Object.prototype.hasOwnProperty.call(current,path)?current[path]:null);}
+        else{
+          for(const item of args){
+            const absolute=resolve(item,s.cwd);
+            if(absolute!==root&&!absolute.startsWith(root+"/"))return {text:"fatal: pathspec '"+item+"' is outside the repository"};
+            const relative=absolute===root?"":absolute.slice(root.length+1),node=get(s,absolute);
+            if(node&&node.type==="dir"){
+              const prefix=relative?relative+"/":"";
+              for(const path of new Set([...Object.keys(head),...Object.keys(current)]))if(path.startsWith(prefix)&&head[path]!==current[path])repo.staged.set(path,Object.prototype.hasOwnProperty.call(current,path)?current[path]:null);
+            }else if(relative)repo.staged.set(relative,Object.prototype.hasOwnProperty.call(current,relative)?current[relative]:null);
+          }
+        }
+        return {text:"Changes staged."};
+      }
+      if(action==="commit"){
+        const mi=args.indexOf("-m"),message=mi>=0?args.slice(mi+1).join(" "):"";
+        if(!message)return {text:"error: commit message required. Usage: git commit -m \"message\""};
+        if(!repo.staged.size)return {text:"nothing to commit, working tree clean"};
+        const snapshot={...headSnapshot(repo)};
+        for(const [path,value] of repo.staged){if(value===null)delete snapshot[path];else snapshot[path]=value;}
+        const id=crypto.createHash("sha1").update(message+Date.now()+JSON.stringify(snapshot)).digest("hex").slice(0,7);
+        const commits=repo.branches.get(repo.branch);
+        commits.push({id,message,author:s.gitConfig.name,email:s.gitConfig.email,date:new Date(),snapshot});
+        repo.staged.clear();
+        return {text:"["+repo.branch+" "+id+"] "+message+"\n"+Object.keys(snapshot).length+" files in simulated commit"};
+      }
+      if(action==="log"){
+        const commits=(repo.branches.get(repo.branch)||[]).slice().reverse();
+        if(!commits.length)return {text:"No commits yet."};
+        if(args.includes("--oneline"))return {text:commits.map(c=>c.id+" "+c.message).join("\n")};
+        return {text:commits.map(c=>"commit "+c.id+"\nAuthor: "+c.author+" <"+c.email+">\nDate:   "+c.date.toString()+"\n\n    "+c.message).join("\n\n")};
+      }
+      if(action==="branch"){
+        const name=args.filter(x=>!x.startsWith("-"))[0];
+        if(args.includes("-d")){
+          if(!name)return {text:"Usage: git branch -d <name>"};
+          if(name===repo.branch||name==="main")return {text:"error: refusing to delete the current or protected main branch"};
+          if(!repo.branches.has(name))return {text:"error: branch '"+name+"' not found"};
+          repo.branches.delete(name);return {text:"Deleted branch "+name+"."};
+        }
+        if(!name)return {text:Array.from(repo.branches.keys()).map(branch=>(branch===repo.branch?"* ":"  ")+branch).join("\n")};
+        if(repo.branches.has(name))return {text:"fatal: a branch named '"+name+"' already exists"};
+        repo.branches.set(name,(repo.branches.get(repo.branch)||[]).slice());return {text:"Created branch "+name};
+      }
+      if(action==="checkout"||action==="switch"){
+        const create=args[0]==="-b",name=args[create?1:0];if(!name)return {text:"Usage: git "+action+" [-b] <branch>"};
+        if(create){if(repo.branches.has(name))return {text:"fatal: branch '"+name+"' already exists"};repo.branches.set(name,(repo.branches.get(repo.branch)||[]).slice());}
+        else if(!repo.branches.has(name))return {text:"error: pathspec '"+name+"' did not match any branch"};
+        repo.branch=name;repo.staged.clear();replaceVirtualTree(s,root,headSnapshot(repo));
+        return {text:"Switched to "+(create?"a new branch":"branch")+" '"+name+"'"};
+      }
+      if(action==="diff"){
+        const cached=args.includes("--cached")||args.includes("--staged"),head=headSnapshot(repo),work=currentSnapshot(s,root),out=[];
+        const paths=cached?Array.from(repo.staged.keys()):Object.keys(head).filter(path=>Object.prototype.hasOwnProperty.call(work,path)&&head[path]!==work[path]);
+        for(const path of paths){const before=head[path]||"",after=cached?repo.staged.get(path):work[path];if(before===after)continue;out.push("diff -- "+path,"--- a/"+path,"+++ b/"+path);if(before)for(const line of before.split("\n"))if(line)out.push("-"+line);if(after)for(const line of String(after).split("\n"))if(line)out.push("+"+line);}
+        return {text:out.join("\n")||"No differences."};
+      }
+      if(action==="restore"){
+        const staged=args[0]==="--staged",path=args[staged?1:0];if(!path)return {text:"Usage: git restore [--staged] <file>"};
+        const absolute=resolve(path,s.cwd),relative=absolute===root?"":absolute.slice(root.length+1);
+        if(staged){repo.staged.delete(relative);return {text:"Unstaged "+path};}
+        const snapshot=headSnapshot(repo);if(Object.prototype.hasOwnProperty.call(snapshot,relative))putVirtualFile(s,root,relative,snapshot[relative]);
+        else{const p=parent(s,absolute);if(p)p.dir.children.delete(p.name);}
+        return {text:"Restored "+path+" from HEAD"};
+      }
+      if(action==="rm"){
+        if(!args[0])return {text:"Usage: git rm <file>"};const absolute=resolve(args[0],s.cwd),relative=absolute===root?"":absolute.slice(root.length+1),p=parent(s,absolute);
+        if(!p||!p.dir.children.has(p.name))return {text:"fatal: pathspec '"+args[0]+"' did not match any files"};
+        p.dir.children.delete(p.name);repo.staged.set(relative,null);return {text:"Removed and staged "+args[0]};
+      }
+      if(action==="config"){
+        if(args[0]==="--get"){const key=args[1];return {text:key==="user.name"?s.gitConfig.name:key==="user.email"?s.gitConfig.email:""};}
+        if(args.length<2)return {text:"Usage: git config user.name \"Name\""};
+        if(args[0]==="user.name")s.gitConfig.name=args.slice(1).join(" ");
+        else if(args[0]==="user.email")s.gitConfig.email=args.slice(1).join(" ");
+        else return {text:"Unsupported simulated Git config key"};
+        return {text:""};
+      }
+      if(action==="remote")return {text:args[0]==="-v"?"No remotes configured.":"Usage: git remote -v"};
+      if(action==="show"){
+        const commit=(repo.branches.get(repo.branch)||[]).slice(-1)[0];return {text:commit?"commit "+commit.id+"\nAuthor: "+commit.author+" <"+commit.email+">\n\n    "+commit.message+"\n\nFiles: "+Object.keys(commit.snapshot).length:"No commits yet."};
+      }
+      if(action==="push"||action==="pull"||action==="fetch")return {text:"fatal: no remote repository configured. This virtual Git environment does not access the network."};
+      return {text:"git: '"+action+"' is not a supported simulated subcommand. Try git help."};
+    }
+    case "apt":{
+      const catalogue={
+        bash:["5.2","GNU Bourne Again Shell"],coreutils:["9.4","GNU core utilities"],findutils:["4.9","Utilities for finding files"],grep:["3.11","GNU grep"],sed:["4.9","GNU stream editor"],
+        git:["2.45","Distributed version control system"],nano:["8.0","Small command-line text editor"],vim:["9.1","Vi IMproved text editor"],
+        curl:["8.7","Command-line URL transfer tool"],wget:["1.21","Network downloader"],python3:["3.12","Python programming language"],
+        nodejs:["22.0","JavaScript runtime"],npm:["10.5","Node package manager"],htop:["3.3","Interactive process viewer"],tree:["2.1","Display directory trees"],
+        jq:["1.7","JSON command-line processor"],zip:["3.0","Archive utility"],unzip:["6.0","Extract ZIP archives"],tar:["1.35","Tape archive utility"],
+        gzip:["1.13","GNU compression utility"],neofetch:["7.1","System information tool"],fastfetch:["2.0","System information tool"],
+        "build-essential":["12.10","Compiler and build tools"],"openssh-client":["9.6","Secure shell client"],"net-tools":["2.10","Legacy network utilities"],
+        iproute2:["6.1","IP routing and network utilities"],dnsutils:["9.18","DNS lookup utilities"],ripgrep:["14.1","Fast text search utility"]
+      };
+      const action=(args.shift()||"").toLowerCase();
+      if(action==="update"){s.packageListsUpdated=true;return {text:"Hit:1 https://packages.tealos.invalid stable InRelease\nReading package lists... Done\nBuilding dependency tree... Done\nAll package indexes are up to date. (simulation; no network access)"};}
+      if(action==="search"){
+        const term=args.join(" ").toLowerCase();if(!term)return {text:"Usage: apt search <keyword>"};
+        const matches=Object.entries(catalogue).filter(([name,info])=>(name+" "+info[1]).toLowerCase().includes(term));
+        return {text:matches.map(([name,info])=>name+" /stable "+info[0]+" - "+info[1]+(s.packages.has(name)?" [installed]":"")).join("\n")||"No packages found."};
+      }
+      if(action==="show"){
+        const name=args[0],info=catalogue[name];if(!info)return {text:"E: No packages found matching "+(name||"")};
+        return {text:"Package: "+name+"\nVersion: "+info[0]+"\nStatus: "+(s.packages.has(name)?"installed":"not installed")+"\nDescription: "+info[1]+"\nRepository: TealOS virtual package catalogue"};
+      }
+      if(action==="list"){
+        const installed=args.includes("--installed"),items=Object.entries(catalogue).filter(([name])=>!installed||s.packages.has(name));
+        return {text:items.map(([name,info])=>name+"/stable "+info[0]+" "+(s.packages.has(name)?"[installed]":"[available]")).join("\n")};
+      }
+      if(action==="install"||action==="remove"||action==="purge"){
+        const names=args.filter(x=>!x.startsWith("-"));if(!names.length)return {text:"Usage: apt "+action+" <package> [package ...]"};
+        const out=[];for(const name of names){if(!catalogue[name]){out.push("E: Unable to locate package "+name);continue;}
+          if(action==="install"){if(s.packages.has(name))out.push(name+" is already the newest version.");else{s.packages.add(name);out.push("Setting up "+name+" ("+catalogue[name][0]+") ... done.");}}
+          else{if(!s.packages.has(name))out.push(name+" is not installed.");else{s.packages.delete(name);out.push("Removing "+name+" ... done.");}}
+        }
+        out.push("\nPackage manager simulation only; no software was installed or removed.");return {text:out.join("\n")};
+      }
+      return {text:"Usage: apt <update|search|show|install|remove|list>"};
+    }
+    case "dpkg":{
+      if(args[0]==="-l"||args[0]==="--list"){
+        const packages=["Desired=Unknown/Install/Remove/Purge/Hold","| Status=Not/Inst/Conf-files/Unpacked/halF-conf/Half-inst/trig-aWait/Trig-pend","|/ Err?=(none)/Reinst-required (Status,Err: uppercase=bad)","||/ Name             Version      Architecture Description"];
+        for(const name of Array.from(s.packages).sort())packages.push("ii  "+name.padEnd(16)+(name==="git"?"2.45":name==="bash"?"5.2":"1.0").padEnd(13)+"all          Simulated package");
+        return {text:packages.join("\n")};
+      }
+      if(args[0]==="-s"&&args[1])return {text:s.packages.has(args[1])?"Package: "+args[1]+"\nStatus: install ok installed\nArchitecture: all":"dpkg-query: package '"+args[1]+"' is not installed"};
+      return {text:"Usage: dpkg -l | dpkg -s <package>"};
+    }
+    case "su":return {text:"su: Authentication failure (simulated). No real account switch occurred."};
+    case "expr":case "bc":{
+      const expression=args.join(" ");if(!expression)return {text:"Usage: "+cmd+" <expression>"};
+      try{const value=calculate(expression);return {text:Number.isInteger(value)?String(value):String(Number(value.toFixed(8)))};}
+      catch(error){return {text:cmd+": "+error.message};}
     }
     case "basename":{
       if(!args[0])return {text:"Usage: basename <path> [suffix]"};
