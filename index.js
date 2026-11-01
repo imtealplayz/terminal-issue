@@ -1,6 +1,7 @@
 const { Client, GatewayIntentBits, Partials } = require("discord.js");
 require("dotenv").config();
 const TOKEN = process.env.DISCORD_TOKEN;
+const crypto = require("node:crypto");
 const sessions = new Map();
 const descriptions = {
   help:"List commands or describe one command.", clear:"Clear the simulated screen.", exit:"End your terminal session.",
@@ -22,14 +23,29 @@ const descriptions = {
   sl:"Display an ASCII train.", matrix:"Display fake Matrix output.", hack:"Show a harmless fake access sequence.",
   scan:"Show fictional open ports.", ssh:"Show simulated SSH response.", man:"Show a manual page.",
   which:"Show virtual command path.", type:"Describe a command.", seq:"Print a short sequence.", rev:"Reverse text.",
-  sort:"Sort file lines.", uniq:"Remove adjacent duplicates.", factor:"Factor an integer.", cut:"Extract delimited fields."
+  sort:"Sort file lines.", uniq:"Remove adjacent duplicates.", factor:"Factor an integer.", cut:"Extract delimited fields.",
+  basename:"Print a path's final filename, optionally removing a suffix.", dirname:"Print a path's parent directory.", realpath:"Show the normalized absolute path of an existing entry.",
+  printf:"Print formatted text with basic %s, %d, %f and escape support.", nl:"Print a file with line numbers.", tac:"Print file lines in reverse order.", fold:"Wrap long lines to a chosen width.",
+  sed:"Perform literal text substitution on a file; use -i to edit the virtual file.", tr:"Translate characters in a file using two character sets.", strings:"Extract readable text sequences from a file.",
+  diff:"Compare two virtual files line by line.", cmp:"Report whether two virtual files are identical.", sha256sum:"Calculate a SHA-256 checksum for a virtual file.", md5sum:"Calculate an MD5 checksum for a virtual file.",
+  base64:"Encode a file as Base64; use -d to decode a Base64 file.", hexdump:"Display a file as hexadecimal bytes.", od:"Display a file's bytes in octal and character form.",
+  groups:"Show the groups of the simulated user.", who:"Show simulated logged-in sessions.", w:"Show who is logged in and their activity.",
+  lscpu:"Display simulated CPU architecture and processor details.", lsblk:"List simulated block devices.", lspci:"List fictional PCI devices.", lsusb:"List fictional USB devices.",
+  hostnamectl:"Display simulated host identity and operating-system details.", timedatectl:"Display simulated time and timezone status.", vmstat:"Show simulated virtual-memory and CPU statistics.",
+  journalctl:"Read the simulated system journal.", dmesg:"Show simulated kernel messages.", mount:"List simulated mounted filesystems.", umount:"Show a simulated unmount result without changing the host.",
+  crontab:"List the simulated user's scheduled jobs with -l.", alias:"List aliases or define one, for example alias ll='ls -la'.", unalias:"Remove one or more simulated shell aliases.",
+  pushd:"Change directory and save the previous location on a directory stack.", popd:"Return to the most recently saved directory.", dirs:"Display the simulated directory stack.",
+  reset:"Reset the visible terminal display.", yes:"Repeat text a limited number of times for demonstration.", shuf:"Shuffle the lines in a virtual text file."
 };
 const groups = [
   ["Shell",["help","clear","exit","pwd","ls","cd","tree","history","which","type","man"]],
   ["Files",["find","stat","file","touch","mkdir","rmdir","rm","cp","mv","cat","echo","head","tail","wc","grep","nano","chmod","sort","uniq","cut"]],
   ["System",["df","du","free","uname","hostname","whoami","id","date","uptime","cal","env","printenv","export","ps","top","kill","jobs","reboot","shutdown"]],
   ["Network (simulated)",["ping","ip","ifconfig","ipconfig","nslookup","curl","wget","traceroute","netstat","ss","ssh","scan"]],
-  ["Utilities",["systemctl","service","neofetch","fastfetch","banner","fortune","cowsay","sl","matrix","hack","seq","rev","factor"]]
+  ["Utilities",["systemctl","service","neofetch","fastfetch","banner","fortune","cowsay","sl","matrix","hack","seq","rev","factor"]],
+  ["Text and checksums",["printf","nl","tac","fold","sed","tr","strings","diff","cmp","sha256sum","md5sum","base64","hexdump","od","shuf"]],
+  ["Linux administration",["groups","who","w","lscpu","lsblk","lspci","lsusb","hostnamectl","timedatectl","vmstat","journalctl","dmesg","mount","umount","crontab"]],
+  ["Shell conveniences",["basename","dirname","realpath","alias","unalias","pushd","popd","dirs","reset","yes"]]
 ];
 const client = new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMessages,GatewayIntentBits.DirectMessages,GatewayIntentBits.MessageContent],partials:[Partials.Channel]});
 const makeDir=()=>({type:"dir",children:new Map(),mode:"drwxr-xr-x",modified:Date.now()});
@@ -46,6 +62,7 @@ function newSession(){
   seed(fs,"/tmp",makeDir());seed(fs,"/usr",makeDir());seed(fs,"/usr/bin",makeDir());
   return {username:"teal",hostname:"teal-pc",cwd:"/home/teal",oldCwd:"/home/teal",fs,started:Date.now(),history:[],
     vars:{USER:"teal",HOME:"/home/teal",SHELL:"/bin/bash",PATH:"/usr/local/bin:/usr/bin:/bin",PWD:"/home/teal",HOSTNAME:"teal-pc",TERM:"xterm-256color"},
+    aliases:{},dirStack:[],
     services:{"ssh.service":"active","networking.service":"active","cron.service":"active","nginx.service":"inactive"},
     processes:[{pid:1,user:"root",cmd:"/sbin/init"},{pid:214,user:"root",cmd:"network-manager"},{pid:389,user:"teal",cmd:"/bin/bash"},{pid:511,user:"teal",cmd:"terminal-session"}]};
 }
@@ -66,7 +83,14 @@ function calendar(month,year){const first=new Date(year,month-1,1),days=new Date
 function simulate(s,input){
   let args;try{args=tokenize(input);}catch(e){return {text:"bash: "+e.message};}
   if(!args.length)return {text:""};
-  const cmd=args.shift().toLowerCase();s.history.push(input);if(s.history.length>100)s.history.shift();
+  let cmd=args.shift().toLowerCase();
+  for(let depth=0;depth<5&&s.aliases[cmd];depth++){
+    const expansion=tokenize(s.aliases[cmd]);
+    if(!expansion.length)break;
+    cmd=expansion.shift().toLowerCase();
+    args=expansion.concat(args);
+  }
+  s.history.push(input);if(s.history.length>100)s.history.shift();
   switch(cmd){
     case "help":{
       if(args[0]){const name=args[0].toLowerCase();return {text:descriptions[name]?name+"\n"+descriptions[name]+"\nUsage: "+name+" [arguments]":"help: no manual entry for "+name};}
@@ -281,6 +305,153 @@ function simulate(s,input){
       if(!path||!Number.isInteger(field)||field<1)return {text:"Usage: cut -d delimiter -f field <file>"};
       const result=readLines(s,path);if(result.error)return {text:"cut: "+result.error};
       return {text:result.lines.map(line=>line.split(delimiter)[field-1]||"").join("\n")};
+    }
+    case "basename":{
+      if(!args[0])return {text:"Usage: basename <path> [suffix]"};
+      let name=resolve(args[0],s.cwd).split("/").filter(Boolean).pop()||"/";
+      if(args[1]&&name.endsWith(args[1]))name=name.slice(0,-args[1].length);
+      return {text:name};
+    }
+    case "dirname":{
+      if(!args[0])return {text:"Usage: dirname <path>"};
+      const bits=resolve(args[0],s.cwd).split("/").filter(Boolean);bits.pop();return {text:bits.length?"/"+bits.join("/"):"/"};
+    }
+    case "realpath":{
+      if(!args[0])return {text:"Usage: realpath <path>"};
+      const path=resolve(args[0],s.cwd);return {text:get(s,path)?path:"realpath: "+args[0]+": No such file or directory"};
+    }
+    case "printf":{
+      if(!args.length)return {text:"Usage: printf <format> [values...]"};
+      let format=args.shift(),index=0;
+      format=format.replace(/\\([nrt\\])/g,(_,c)=>({n:"\n",r:"\r",t:"\t","\\":"\\"}[c]));
+      format=format.replace(/%%|%[-+0-9.]*[sdif]/g,token=>{
+        if(token==="%%")return "%";
+        const value=args[index++]??"";
+        if(token.endsWith("d")||token.endsWith("i"))return String(Math.trunc(Number(value)||0));
+        if(token.endsWith("f"))return String(Number(value)||0);
+        return String(value);
+      });
+      return {text:format};
+    }
+    case "nl":{
+      const path=args.filter(x=>x!=="-ba"&&x!=="-b").pop();if(!path)return {text:"Usage: nl [-ba] <file>"};
+      const result=readLines(s,path);if(result.error)return {text:"nl: "+result.error};
+      let number=0;return {text:result.lines.map(line=>{if(args.includes("-ba")||line.length){number++;return String(number).padStart(6)+"  "+line;}return "       "+line;}).join("\n")};
+    }
+    case "tac":{
+      if(!args[0])return {text:"Usage: tac <file>"};const result=readLines(s,args[0]);if(result.error)return {text:"tac: "+result.error};
+      return {text:result.lines.reverse().join("\n")};
+    }
+    case "fold":{
+      let width=80,path=args[0];if(args[0]==="-w"){width=Math.max(1,Math.min(500,Number(args[1])||80));path=args[2];}
+      if(!path)return {text:"Usage: fold [-w width] <file>"};const result=readLines(s,path);if(result.error)return {text:"fold: "+result.error};
+      return {text:result.lines.map(line=>line.match(new RegExp(".{1,"+width+"}","g"))?.join("\n")||"").join("\n")};
+    }
+    case "sed":{
+      const inPlace=args[0]==="-i",expression=args[inPlace?1:0],path=args[inPlace?2:1];
+      if(!expression||!path)return {text:"Usage: sed [-i] 's/old/new/g' <file>"};
+      const match=expression.match(/^s\/(.*)\/(.*)\/(g?)$/);if(!match)return {text:"sed: supported expression is s/old/new/g"};
+      const result=readLines(s,path);if(result.error)return {text:"sed: "+result.error};
+      const old=match[1],replacement=match[2],global=match[3]==="g";
+      const changed=result.lines.map(line=>global?line.split(old).join(replacement):line.replace(old,replacement)).join("\n");
+      if(inPlace){const error=write(s,path,changed+"\n",false);return {text:error||""};}
+      return {text:changed};
+    }
+    case "tr":{
+      if(args.length<3)return {text:"Usage: tr <from-characters> <to-characters> <file>"};
+      const result=readLines(s,args[2]);if(result.error)return {text:"tr: "+result.error};
+      const from=args[0],to=args[1];let output="";
+      for(const char of result.lines.join("\n")){const i=from.indexOf(char);output+=i<0?char:(to[i]??"");}
+      return {text:output};
+    }
+    case "strings":{
+      if(!args[0])return {text:"Usage: strings <file>"};const node=get(s,args[0]);
+      if(!node||node.type!=="file")return {text:"strings: "+args[0]+": cannot read file"};
+      const matches=node.content.match(/[ -~]{4,}/g)||[];return {text:matches.join("\n")||"No printable strings found."};
+    }
+    case "diff":case "cmp":{
+      if(args.length<2)return {text:"Usage: "+cmd+" <file1> <file2>"};
+      const left=readLines(s,args[0]),right=readLines(s,args[1]);if(left.error)return {text:cmd+": "+left.error};if(right.error)return {text:cmd+": "+right.error};
+      const same=left.lines.length===right.lines.length&&left.lines.every((line,i)=>line===right.lines[i]);
+      if(same)return {text:cmd==="cmp"?"Files are identical.":""};
+      if(cmd==="cmp")return {text:args[0]+" "+args[1]+" differ"};
+      const out=["--- "+args[0],"+++ "+args[1]];
+      const total=Math.max(left.lines.length,right.lines.length);
+      for(let i=0;i<total;i++){if(left.lines[i]===right.lines[i])continue;if(left.lines[i]!==undefined)out.push("-"+left.lines[i]);if(right.lines[i]!==undefined)out.push("+"+right.lines[i]);}
+      return {text:out.join("\n")};
+    }
+    case "sha256sum":case "md5sum":{
+      if(!args[0])return {text:"Usage: "+cmd+" <file>"};const node=get(s,args[0]);
+      if(!node||node.type!=="file")return {text:cmd+": "+args[0]+": No such file"};
+      const algorithm=cmd==="sha256sum"?"sha256":"md5";
+      return {text:crypto.createHash(algorithm).update(node.content,"utf8").digest("hex")+"  "+args[0]};
+    }
+    case "base64":{
+      const decode=args[0]==="-d"||args[0]==="--decode",path=decode?args[1]:args[0];
+      if(!path)return {text:"Usage: base64 [-d] <file>"};const node=get(s,path);
+      if(!node||node.type!=="file")return {text:"base64: "+path+": No such file"};
+      if(!decode)return {text:Buffer.from(node.content,"utf8").toString("base64")};
+      try{return {text:Buffer.from(node.content.trim(),"base64").toString("utf8")};}catch{return {text:"base64: invalid input"};}
+    }
+    case "hexdump":case "od":{
+      if(!args[0])return {text:"Usage: "+cmd+" <file>"};const node=get(s,args[0]);
+      if(!node||node.type!=="file")return {text:cmd+": "+args[0]+": No such file"};
+      const bytes=Buffer.from(node.content,"utf8"),out=[];
+      for(let offset=0;offset<bytes.length;offset+=16){
+        const part=bytes.subarray(offset,offset+16),hex=Array.from(part).map(b=>b.toString(16).padStart(2,"0")).join(" ");
+        const printable=Array.from(part).map(b=>b>=32&&b<=126?String.fromCharCode(b):".").join("");
+        out.push(offset.toString(16).padStart(8,"0")+"  "+hex.padEnd(47)+"  |"+printable+"|");
+      }
+      return {text:out.join("\n")||"00000000"};
+    }
+    case "groups":return {text:"teal : teal sudo users"};
+    case "who":return {text:"teal     tty1         "+new Date().toLocaleString()+" (simulated)"};
+    case "w":return {text:" "+new Date().toLocaleTimeString()+" up "+Math.floor((Date.now()-s.started)/60000)+" min, 1 user, load average: 0.18, 0.12, 0.08\nUSER  TTY   FROM       LOGIN@   IDLE   WHAT\nteal  tty1  discord    now      0.00s  interactive-shell"};
+    case "lscpu":return {text:"Architecture:          x86_64\nCPU op-mode(s):        32-bit, 64-bit\nCPU(s):                8\nThread(s) per core:    2\nCore(s) per socket:   4\nVendor ID:             AuthenticAMD\nModel name:            Virtual AMD Ryzen Processor\nVirtualization:        enabled\n(simulated CPU information)"};
+    case "lsblk":return {text:"NAME   MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS\nvda    252:0    0    64G  0 disk\n└─vda1 252:1    0    64G  0 part /\nvdb    252:16   0   128G  0 disk /home\nloop0    7:0    0   1.2G  1 loop /snap/core"};
+    case "lspci":return {text:"00:00.0 Host bridge: Virtual PCI Host Bridge\n00:01.0 VGA compatible controller: Virtual Display Adapter\n00:02.0 Ethernet controller: Virtual Network Adapter\n00:03.0 Audio device: Virtual Audio Controller"};
+    case "lsusb":return {text:"Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub\nBus 001 Device 002: ID 046d:c077 Virtual USB Mouse\nBus 001 Device 003: ID 04f2:b6d9 Virtual USB Keyboard"};
+    case "hostnamectl":return {text:" Static hostname: "+s.hostname+"\n       Icon name: computer-desktop\n         Chassis: desktop\n      Machine ID: simulated-machine-id\nOperating System: TealOS 1.0 (Simulation)\n          Kernel: Linux 6.8.0-teal\n    Architecture: x86-64"};
+    case "timedatectl":return {text:"               Local time: "+new Date().toString()+"\n           Universal time: "+new Date().toUTCString()+"\n                 Time zone: Asia/Kolkata (simulated)\n             NTP service: active\n         RTC in local TZ: no"};
+    case "vmstat":return {text:"procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----\n r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st\n 1  0      0 5879808 128000 892000    0    0     2     4  120  220  2  1 96  1  0"};
+    case "journalctl":{
+      const node=get(s,"/var/log/syslog");return {text:"-- Logs begin at "+new Date(s.started).toLocaleString()+" --\n"+(node&&node.type==="file"?node.content:"No journal entries.")};
+    }
+    case "dmesg":return {text:"[    0.000000] TealOS kernel 6.8.0-teal booting\n[    0.182000] Virtual CPU initialized\n[    0.320000] Memory: 8192MB available\n[    0.512000] eth0: virtual network interface up\n[    1.004000] Filesystem mounted (in-memory)\n[    1.200000] Terminal session ready"};
+    case "mount":return {text:"tealos-root on / type ext4 (rw,relatime) [simulated]\ntmpfs on /tmp type tmpfs (rw,nosuid,nodev) [simulated]\nhome on /home type ext4 (rw,relatime) [simulated]"};
+    case "umount":return {text:args[0]?"umount: "+args[0]+": simulated mount table is read-only":"Usage: umount <mountpoint>"};
+    case "crontab":return {text:args[0]==="-l"?"# Simulated crontab for teal\n# No scheduled jobs.":"Usage: crontab -l"};
+    case "alias":{
+      if(!args.length)return {text:Object.keys(s.aliases).sort().map(name=>"alias "+name+"='"+s.aliases[name]+"'").join("\n")||"No aliases defined."};
+      const assignment=args.join(" "),index=assignment.indexOf("=");if(index<1)return {text:"Usage: alias name='command arguments'"};
+      const name=assignment.slice(0,index),value=assignment.slice(index+1).replace(/^['"]|['"]$/g,"");
+      if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))return {text:"alias: invalid name"};
+      s.aliases[name]=value;return {text:""};
+    }
+    case "unalias":{
+      if(!args.length)return {text:"Usage: unalias <name>"};const missing=[];
+      for(const name of args){if(!Object.prototype.hasOwnProperty.call(s.aliases,name))missing.push("unalias: "+name+": not found");else delete s.aliases[name];}
+      return {text:missing.join("\n")};
+    }
+    case "pushd":{
+      if(!args[0])return {text:"Usage: pushd <directory>"};const path=resolve(args[0],s.cwd),node=get(s,path);
+      if(!node||node.type!=="dir")return {text:"pushd: "+args[0]+": Not a directory"};
+      s.dirStack.unshift(s.cwd);s.oldCwd=s.cwd;s.cwd=path;s.vars.PWD=path;return {text:s.cwd+" "+s.dirStack.join(" ")};
+    }
+    case "popd":{
+      if(!s.dirStack.length)return {text:"popd: directory stack empty"};const path=s.dirStack.shift();if(!get(s,path))return {text:"popd: saved directory no longer exists"};
+      s.oldCwd=s.cwd;s.cwd=path;s.vars.PWD=path;return {text:s.cwd+" "+s.dirStack.join(" ")};
+    }
+    case "dirs":return {text:[s.cwd,...s.dirStack].join(" ")};
+    case "reset":return {text:"TealOS terminal display reset.\n"+prompt(s)};
+    case "yes":{
+      const value=args.join(" ")||"y",count=Math.max(1,Math.min(10,Number(args[args.length-1])||5));
+      return {text:Array.from({length:count},()=>value).join("\n")+"\n[output limited to "+count+" lines]"};
+    }
+    case "shuf":{
+      if(!args[0])return {text:"Usage: shuf <file>"};const result=readLines(s,args[0]);if(result.error)return {text:"shuf: "+result.error};
+      const shuffled=result.lines.slice();for(let i=shuffled.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]];}
+      return {text:shuffled.join("\n")};
     }
     default:return {text:"bash: "+cmd+": command not found\nType help to see supported commands."};
   }
