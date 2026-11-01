@@ -13,15 +13,21 @@ A prefix-only Discord bot that starts a simulated Linux-style terminal when a us
 ## Usage
 Send `!terminal` at the very beginning of a Discord message. Messages from that same user in that same channel are interpreted as terminal input until `exit` is entered.
 
-Run `help` inside a session to see the complete command catalogue and descriptions. Use `help command` for a specific command.
+Run `help` inside a session to see all 123 commands and descriptions. Use `help command` for details about one command.
 
-## Included commands
-More than 70 commands cover shell navigation, a virtual filesystem, system information, simulated networking, process and service simulation, and terminal effects.
+## Main command areas
+- Shell navigation and conveniences: `pwd`, `ls`, `cd`, `tree`, `find`, `basename`, `dirname`, aliases and directory stack commands.
+- Virtual filesystem: `mkdir`, `touch`, `cat`, `echo`, `cp`, `mv`, `rm`, `grep`, `sed`, `diff`, checksums, Base64 and hexadecimal views.
+- System information: `neofetch`, `lscpu`, `lsblk`, `free`, `vmstat`, `journalctl`, `dmesg`, and simulated processes/services.
+- Networking: `ping`, `ip`, `nslookup`, `curl`, `traceroute`, `netstat`, and `scan` print fictional results only.
+- Development: `git init`, `status`, `add`, `commit`, `log`, branches, checkout, restore, and diff work against a per-session virtual repository.
+- Packages: `apt update`, `search`, `show`, `install`, `remove`, `list`, and `dpkg -l` operate on an in-memory package catalogue.
+- Calculations: `expr` and `bc` support basic arithmetic without evaluating JavaScript or shell code.
 
 ## Safety and limitations
 - This is a simulated environment, not a real shell.
 - No Windows, Linux, PowerShell, CMD, or host operating-system commands are executed.
 - Networking commands display fictional results and do not connect to hosts or download anything.
-- Processes, services, permissions, and system operations are simulated.
+- Git repositories, package installations, files, processes, services and permissions exist only in the simulated session.
 - Each user has an isolated session per channel. Sessions and virtual files disappear when the bot stops or restarts.
 - Every terminal response is wrapped in a triple-backtick Discord code block.
